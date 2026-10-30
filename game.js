@@ -4,11 +4,26 @@ const COL_W = W / COLS;
 const TILE_H = 150;
 const KEYS = ['D', 'F', 'J', 'K'];
 
+// Resolución interna: el juego se dibuja a 2x-3x y se reduce, así se ve nítido
+const SCALE = Math.min(3, Math.max(2, Math.ceil(window.devicePixelRatio || 1)));
+
+// Todo el texto se rasteriza a la resolución alta
+const _addText = Phaser.GameObjects.GameObjectFactory.prototype.text;
+Phaser.GameObjects.GameObjectFactory.prototype.text = function (x, y, text, style) {
+  return _addText.call(this, x, y, text, Object.assign({ resolution: SCALE }, style));
+};
+
+// Mantiene tus coordenadas 400x600 aunque el canvas sea más grande
+function setupCamera(scene) {
+  scene.cameras.main.setZoom(SCALE).centerOn(W / 2, H / 2);
+}
+
 const LIFE_MAX = 300;
 const LIFE_PENALTY = 20;
 const SCORE_PENALTY = 1;
 
 const PRAISE = ['¡Muy bien!', '¡Genial!', '¡Increíble!', '¡Perfecto!'];
+const PRAISE_EC = ['¡Chévere!', '¡Bacán!', '¡De una!', '¡Qué fino!'];
 const PRAISE_COLORS = ['#fde047', '#ffffff', '#fb7185', '#34d399'];
 
 /* ---------------- RITMO (nivel demo) ---------------- */
@@ -42,12 +57,66 @@ const RECALL_MAP = {
   ]
 };
 
+/* ---------------- RUTA ECUADOR: sanjuanito original ----------------
+   Composición propia en La menor (pentatónica andina), compás de 2/4.
+   El acompañamiento (bombo, bajo, charango, rallador, rondador) se sintetiza con
+   WebAudio y suena solo; la MELODÍA la tocas tú: cada baldosa es una nota. */
+const ECU_BPM = 96;
+const ECU_BEAT = 60 / ECU_BPM;  // negra
+const ECU_EIGHTH = ECU_BEAT / 2; // corchea
+const ECU_BAR = ECU_BEAT * 2;    // un compás de 2/4
+const ECU_LEAD = 2;              // segundos de entrada antes del primer compás
+const SYNTH_OFFSET = 0;          // ajuste fino de sincronía (igual que AUDIO_OFFSET)
+
+const ECU_NOTES = { a: 440.0, c: 523.25, d: 587.33, e: 659.25, g: 783.99, A: 880.0 };
+const ECU_COL = { a: 0, c: 1, d: 1, e: 2, g: 3, A: 3 };
+
+// 24 compases, 4 corcheas por compás. '.' = silencio. A mayúscula = La agudo.
+const ECU_BARS = [
+  'e.ed', 'c.a.', 'd.dc', 'a...', 'e.eg', 'A.ge', 'd.cd', 'e...',
+  'A.Ag', 'e.g.', 'A.ge', 'd.e.', 'g.ge', 'd.ca', 'c.de', 'a...',
+  'edcd', 'e.e.', 'gegA', 'g.e.', 'dedc', 'acde', 'gedc', 'a...'
+];
+
+// Progresión de 4 compases: Am | Dm | E | Am  → [fundamental del bajo, quinta del acorde]
+const ECU_PROG = [
+  [110.0, 329.63],
+  [146.83, 440.0],
+  [164.81, 493.88],
+  [110.0, 329.63]
+];
+
+function buildEcuMap() {
+  const times = [], cols = [], freqs = [];
+  ECU_BARS.forEach((bar, b) => {
+    for (let s = 0; s < 4; s++) {
+      const ch = bar[s];
+      if (ch === '.') continue;
+      times.push(+((b * 4 + s) * ECU_EIGHTH).toFixed(4));
+      cols.push(ECU_COL[ch]);
+      freqs.push(ECU_NOTES[ch]);
+    }
+  });
+  return { times, cols, freqs };
+}
+const ECU_MAP = buildEcuMap();
+const ECU_LENGTH = ECU_BARS.length * ECU_BAR; // ≈ 30 s
+
 const MODES = {
   demo: {
-    label: 'DEMO', music: 'recall', rhythm: true,
+    label: 'DEMO', music: 'recall', rhythm: true, map: RECALL_MAP,
+    songTitle: 'RECALL', songSub: '(Demostración)',
     tileH: 120, fall: 300, hitY: 510,
     hueSpeed: 4, satStart: 0.35, satGrow: 0.002, satMax: 0.55,
     lightStart: 0.85, lightDrop: 0.0005, lightMin: 0.75
+  },
+  ecuador: {
+    label: 'ECUADOR', rhythm: true, synth: true, map: ECU_MAP,
+    songTitle: 'AMANECER ANDINO', songSub: '(Sanjuanito · composición original)',
+    tileH: 80, fall: 280, hitY: 510, offset: SYNTH_OFFSET, length: ECU_LENGTH,
+    praise: PRAISE_EC, tileColor: 0x1c1208, tileStroke: 0xf2a900,
+    // Del cielo nocturno al amanecer andino
+    palette: [0x14213d, 0x4a2c6b, 0xc2410c, 0xf59e0b, 0xfde68a]
   },
   chaos: {
     label: 'CAÓTICO', speed: 250, accel: 8, maxSpeed: Infinity, goal: null, music: null,
@@ -79,6 +148,34 @@ function saveBest(mode, score) {
   return false;
 }
 
+/* ---------------- DECORACIÓN ANDINA ---------------- */
+// Chakana (cruz andina escalonada) con el centro hueco
+function drawChakana(scene, x, y, u, color, depth = 1) {
+  const g = scene.add.graphics().setDepth(depth);
+  g.fillStyle(color, 1);
+  g.fillRect(x - u, y - 3 * u, 2 * u, 6 * u);
+  g.fillRect(x - 3 * u, y - u, 6 * u, 2 * u);
+  g.fillRect(x - 2 * u, y - 2 * u, 4 * u, 4 * u);
+  g.fillStyle(0x0f172a, 1);
+  g.fillCircle(x, y, u * 0.8);
+  return g;
+}
+
+// Franja de triángulos de colores, inspirada en los tejidos andinos
+function drawTextileBand(scene, x0, y, width, h, depth = 1) {
+  const colors = [0xdc2626, 0xfacc15, 0x2563eb, 0x16a34a];
+  const n = Math.floor(width / h);
+  const g = scene.add.graphics().setDepth(depth);
+  for (let i = 0; i < n; i++) {
+    const x = x0 + i * h;
+    g.fillStyle(colors[i % 4], 1);
+    g.fillTriangle(x, y + h, x + h / 2, y, x + h, y + h);
+  }
+  g.fillStyle(0xfacc15, 1);
+  g.fillRect(x0, y + h - 2, n * h, 2);
+  return g;
+}
+
 /* ---------------- SONIDO (WebAudio) ---------------- */
 let audioCtx = null;
 
@@ -89,6 +186,10 @@ function getCtx() {
   }
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
+}
+
+function audioLatency() {
+  return audioCtx ? (audioCtx.outputLatency || 0) : 0;
 }
 
 function tone(freq, dur = 0.18, type = 'triangle', vol = 0.18, when = 0) {
@@ -121,17 +222,165 @@ function playLose() {
   [392, 330, 262, 196].forEach((f, i) => tone(f, 0.3, 'sawtooth', 0.12, i * 0.14));
 }
 
+/* ---- Instrumentos andinos sintetizados (todos reciben tiempo absoluto "at") ---- */
+
+// Charango: cuerdas dobles, brillante y de decaimiento rápido
+function pluckAt(ctx, dest, freq, at, dur, vol) {
+  const g = ctx.createGain();
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 3200;
+  lp.Q.value = 0.7;
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(vol, at + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  [['triangle', 0, 1], ['sawtooth', 9, 0.35]].forEach(([type, cents, level]) => {
+    const o = ctx.createOscillator();
+    const og = ctx.createGain();
+    og.gain.value = level;
+    o.type = type;
+    o.frequency.setValueAtTime(freq, at);
+    o.detune.value = cents;
+    o.connect(og);
+    og.connect(lp);
+    o.start(at);
+    o.stop(at + dur + 0.05);
+  });
+  lp.connect(g);
+  g.connect(dest);
+}
+
+// Rondador (zampoña ecuatoriana): tono de flauta suave con un armónico
+function rondadorAt(ctx, dest, freq, at, dur, vol) {
+  const att = Math.min(0.07, dur * 0.3);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.linearRampToValueAtTime(vol, at + att);
+  g.gain.setValueAtTime(vol, at + dur * 0.6);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  const o1 = ctx.createOscillator();
+  const o2 = ctx.createOscillator();
+  const g2 = ctx.createGain();
+  g2.gain.value = 0.25;
+  o1.type = 'sine';
+  o2.type = 'sine';
+  o1.frequency.setValueAtTime(freq, at);
+  o2.frequency.setValueAtTime(freq * 2, at);
+  o1.connect(g);
+  o2.connect(g2);
+  g2.connect(g);
+  g.connect(dest);
+  o1.start(at); o2.start(at);
+  o1.stop(at + dur + 0.05); o2.stop(at + dur + 0.05);
+}
+
+// Bombo legüero
+function bomboAt(ctx, dest, at, vol) {
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(140, at);
+  o.frequency.exponentialRampToValueAtTime(48, at + 0.16);
+  g.gain.setValueAtTime(vol, at);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
+  o.connect(g);
+  g.connect(dest);
+  o.start(at);
+  o.stop(at + 0.3);
+}
+
+// Bajo
+function bassAt(ctx, dest, freq, at, dur, vol) {
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(freq, at);
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(vol, at + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  o.connect(g);
+  g.connect(dest);
+  o.start(at);
+  o.stop(at + dur + 0.03);
+}
+
+// Rallador / maraca: ruido filtrado
+let noiseBuf = null;
+function getNoise(ctx) {
+  if (!noiseBuf) {
+    const len = Math.floor(ctx.sampleRate * 0.2);
+    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  }
+  return noiseBuf;
+}
+
+function shakerAt(ctx, dest, at, vol) {
+  const s = ctx.createBufferSource();
+  s.buffer = getNoise(ctx);
+  const hp = ctx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 5000;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(vol, at);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.06);
+  s.connect(hp);
+  hp.connect(g);
+  g.connect(dest);
+  s.start(at);
+  s.stop(at + 0.08);
+}
+
+// Nota de la melodía que toca el jugador
+function playMelodyNote(freq) {
+  const ctx = getCtx();
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  pluckAt(ctx, ctx.destination, freq, t, 0.55, 0.22);
+  rondadorAt(ctx, ctx.destination, freq * 2, t, 0.35, 0.03);
+}
+
+// Programa todo el acompañamiento del sanjuanito de una sola vez
+function scheduleSanjuanito(ctx, dest, t0) {
+  ECU_BARS.forEach((_, b) => {
+    const [root, fifth] = ECU_PROG[b % 4];
+    const bt = t0 + b * ECU_BAR;
+
+    // Bombo en el 1 y en la última corchea
+    [0, 3].forEach(s => bomboAt(ctx, dest, bt + s * ECU_EIGHTH, s === 0 ? 0.5 : 0.3));
+    // Bajo
+    [0, 2].forEach(s => bassAt(ctx, dest, root, bt + s * ECU_EIGHTH, ECU_EIGHTH * 1.8, 0.2));
+    // Rasgueo de charango a contratiempo
+    [1, 3].forEach(s => {
+      [root * 2, fifth, root * 4].forEach((f, i) => {
+        pluckAt(ctx, dest, f, bt + s * ECU_EIGHTH + i * 0.012, 0.3, 0.07);
+      });
+    });
+    // Rallador en cada corchea
+    for (let s = 0; s < 4; s++) {
+      shakerAt(ctx, dest, bt + s * ECU_EIGHTH, s % 2 === 0 ? 0.07 : 0.04);
+    }
+    // El rondador entra en la segunda parte
+    if (b >= 8) rondadorAt(ctx, dest, root * 4, bt, ECU_BAR * 0.95, 0.045);
+  });
+}
+
 /* ---------------- PANTALLA DE INICIO ---------------- */
 class MenuScene extends Phaser.Scene {
   constructor() { super('Menu'); }
 
   create() {
+    setupCamera(this);
     this.started = false;
     this.add.rectangle(0, 0, W, H, 0x0f172a).setOrigin(0);
 
     this.add.text(W / 2, 65, 'PIANO\nTILES', {
       fontSize: '52px', color: '#ffffff', fontStyle: 'bold', align: 'center'
     }).setOrigin(0.5);
+
+    drawChakana(this, 42, 65, 7, 0xf59e0b);
+    drawChakana(this, W - 42, 65, 7, 0xf59e0b);
 
     for (let i = 0; i < COLS; i++) {
       this.add.rectangle(i * COL_W + COL_W / 2, 165, COL_W - 10, 50, 0x1e293b)
@@ -153,27 +402,32 @@ class MenuScene extends Phaser.Scene {
       fontSize: '16px', color: '#94a3b8', fontStyle: 'bold'
     }).setOrigin(0.5);
 
-    this.makeButton(400, 0x22c55e, 'DEMOSTRACIÓN  [1]',
+    this.makeButton(388, 0x22c55e, 'DEMOSTRACIÓN  [1]',
       'Ritmo · ' + RECALL_MAP.times.length + ' baldosas · Mejor: ' + loadBest('demo'), 'demo');
-    this.makeButton(480, 0xe11d48, 'MODO CAÓTICO  [2]',
+    this.makeButton(456, 0xe11d48, 'MODO CAÓTICO  [2]',
       'Sin límite · Mejor: ' + loadBest('chaos'), 'chaos');
+    this.makeButton(524, 0xb45309, 'RUTA ECUADOR  [3]',
+      'Sanjuanito · ' + ECU_MAP.times.length + ' baldosas · Mejor: ' + loadBest('ecuador'), 'ecuador');
 
-    this.add.text(W / 2, 575, 'Música: Gabriawll - Recall (NCS)', {
+    this.add.text(W / 2, 576, 'Música: Recall (NCS) · Amanecer Andino (original)', {
       fontSize: '11px', color: '#64748b'
     }).setOrigin(0.5);
 
+    drawTextileBand(this, 0, 588, W, 12);
+
     this.input.keyboard.on('keydown-ONE', () => this.startGame('demo'));
     this.input.keyboard.on('keydown-TWO', () => this.startGame('chaos'));
+    this.input.keyboard.on('keydown-THREE', () => this.startGame('ecuador'));
   }
 
   makeButton(y, color, title, subtitle, mode) {
-    const btn = this.add.rectangle(W / 2, y, 340, 64, color)
+    const btn = this.add.rectangle(W / 2, y, 340, 60, color)
       .setInteractive({ useHandCursor: true });
     this.add.text(W / 2, y - 10, title, {
-      fontSize: '22px', color: '#ffffff', fontStyle: 'bold'
+      fontSize: '21px', color: '#ffffff', fontStyle: 'bold'
     }).setOrigin(0.5);
-    this.add.text(W / 2, y + 16, subtitle, {
-      fontSize: '14px', color: '#ffffff'
+    this.add.text(W / 2, y + 15, subtitle, {
+      fontSize: '13px', color: '#ffffff'
     }).setOrigin(0.5).setAlpha(0.9);
     btn.on('pointerover', () => btn.setScale(1.04));
     btn.on('pointerout', () => btn.setScale(1));
@@ -205,12 +459,13 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
+    setupCamera(this);
     this.rows = [];
     this.notes = [];
     this.score = 0;
     this.speed = this.cfg.speed || 250;
     this.elapsed = 0;
-    this.songTime = 0;
+    this.songTime = this.cfg.synth ? -ECU_LEAD : 0;
     this.nextBeat = 0;
     this.musicDone = false;
     this.life = LIFE_MAX;
@@ -219,32 +474,39 @@ class GameScene extends Phaser.Scene {
     this.paused = false;
     this.overTime = 0;
     this.music = null;
+    this.bus = null;
+    this.t0 = null;
     this.newRecord = false;
     this.hits = 0;
     this.maxStreak = 0;
     this.perfects = 0;
     this.winScreen = false;
-    this.total = this.cfg.rhythm ? RECALL_MAP.times.length : (this.cfg.goal || 0);
+    this.total = this.cfg.rhythm ? this.cfg.map.times.length : (this.cfg.goal || 0);
 
     // Fondo dinámico
     this.bg = this.add.rectangle(0, 0, W, H, 0xffffff).setOrigin(0).setDepth(0);
 
-    // Burbujas que suben
+    // Burbujas que suben (la Ruta Ecuador usa paisaje en su lugar)
     this.bubbles = [];
-    for (let i = 0; i < 10; i++) {
-      const b = this.add.circle(
-        Phaser.Math.Between(0, W), Phaser.Math.Between(0, H),
-        Phaser.Math.Between(12, 40), 0xffffff, 0.15
-      ).setDepth(1);
-      this.bubbles.push({ obj: b, vy: Phaser.Math.Between(20, 60) });
+    if (!this.cfg.palette) {
+      for (let i = 0; i < 10; i++) {
+        const b = this.add.circle(
+          Phaser.Math.Between(0, W), Phaser.Math.Between(0, H),
+          Phaser.Math.Between(12, 40), 0xffffff, 0.15
+        ).setDepth(1);
+        this.bubbles.push({ obj: b, vy: Phaser.Math.Between(20, 60) });
+      }
     }
 
     // Pulso de luz (aciertos / beat)
     this.pulse = this.add.rectangle(0, 0, W, H, 0xffffff, 0).setOrigin(0).setDepth(1);
 
+    // Paisaje andino: estrellas, sol naciente, volcán y Quito
+    if (this.cfg.palette) this.buildAndes();
+
     // Líneas divisorias
     for (let i = 1; i < COLS; i++) {
-      this.add.rectangle(i * COL_W, 0, 2, H, 0xffffff, 0.5).setOrigin(0.5, 0).setDepth(1);
+      this.add.rectangle(i * COL_W, 0, 2, H, 0xffffff, 0.5).setOrigin(0.5, 0).setDepth(1.7);
     }
 
     if (this.cfg.rhythm) {
@@ -293,7 +555,7 @@ class GameScene extends Phaser.Scene {
     // Entrada
     this.input.on('pointerdown', (p, over) => {
       if (over && over.length) return; // clic sobre un botón
-      this.handleTap(Math.floor(p.x / COL_W));
+      this.handleTap(Math.floor(p.worldX / COL_W));
     });
     this.input.keyboard.on('keydown', (e) => {
       const key = e.key.toUpperCase();
@@ -306,24 +568,88 @@ class GameScene extends Phaser.Scene {
       if (i >= 0) this.handleTap(i);
     });
 
+    // Con música sintetizada el reloj es el del audio: si la pestaña se oculta, pausamos
+    if (this.cfg.synth) {
+      const autoPause = () => { if (!this.paused && !this.over) this.togglePause(); };
+      this.game.events.on(Phaser.Core.Events.HIDDEN, autoPause);
+      this.events.once('shutdown', () => this.game.events.off(Phaser.Core.Events.HIDDEN, autoPause));
+    }
+
     // Música
     this.startMusic();
     this.events.once('shutdown', () => this.stopMusic());
+  }
+
+  /* ---- Paisaje andino (Ruta Ecuador) ---- */
+  buildAndes() {
+    this.stars = [];
+    for (let i = 0; i < 30; i++) {
+      this.stars.push(this.add.circle(
+        Phaser.Math.Between(5, W - 5), Phaser.Math.Between(5, 300),
+        Phaser.Math.Between(1, 2), 0xffffff, 0.9
+      ).setDepth(1));
+    }
+
+    // Sol naciente (sube con el avance de la canción)
+    this.sunGlow = this.add.circle(130, 640, 62, 0xfde68a, 0.25).setDepth(1.1);
+    this.sun = this.add.circle(130, 640, 36, 0xfff3b0, 1).setDepth(1.2);
+
+    // Cordillera y volcán nevado (tipo Cotopaxi)
+    const g = this.add.graphics().setDepth(1.5);
+    g.fillStyle(0x3b2f5c, 0.9);
+    g.fillTriangle(-40, 600, 70, 440, 180, 600);
+    g.fillTriangle(110, 600, 215, 470, 320, 600);
+    g.fillTriangle(300, 600, 390, 450, 480, 600);
+    g.fillStyle(0x2a2347, 1);
+    g.fillTriangle(215, 600, 315, 400, 415, 600);
+    g.fillStyle(0xf8fafc, 0.95);
+    g.fillTriangle(315, 400, 285, 460, 345, 460);
+
+    // Quito: casas coloniales, Basílica del Voto Nacional y el Panecillo con la Virgen
+    const q = this.add.graphics().setDepth(1.6);
+    q.fillStyle(0x0d0b16, 1);
+    q.fillRect(0, 565, 150, 35);
+    q.fillRect(8, 552, 24, 13);
+    q.fillCircle(52, 556, 12);
+    q.fillRect(40, 556, 24, 12);
+    q.fillRect(80, 520, 14, 45);
+    q.fillTriangle(78, 520, 87, 486, 96, 520);
+    q.fillRect(112, 520, 14, 45);
+    q.fillTriangle(110, 520, 119, 486, 128, 520);
+    q.fillRect(94, 535, 18, 30);
+    q.fillEllipse(335, 612, 220, 150);
+    q.fillRect(333, 520, 4, 17);
+    q.fillCircle(335, 517, 3.5);
+    q.fillTriangle(335, 524, 324, 516, 331, 534);
+    q.fillTriangle(335, 524, 346, 516, 339, 534);
+  }
+
+  updateAndes(prog) {
+    this.sun.y = 640 - 320 * prog;
+    this.sunGlow.y = this.sun.y;
+    const a = Phaser.Math.Clamp(1 - prog * 2.2, 0, 1) * 0.9;
+    this.stars.forEach(s => s.setAlpha(a));
   }
 
   /* ---- Construcción de baldosas ---- */
   buildRhythmTiles() {
     const h = this.cfg.tileH;
     const hitY = this.cfg.hitY;
+    const map = this.cfg.map;
+    const offset = this.cfg.offset !== undefined ? this.cfg.offset : AUDIO_OFFSET;
 
     // Línea de golpeo
     this.add.rectangle(0, hitY, W, 4, 0xffffff, 0.9).setOrigin(0, 0.5).setDepth(3);
 
-    RECALL_MAP.times.forEach((t, i) => {
-      const col = RECALL_MAP.cols[i];
-      const rect = this.add.rectangle(col * COL_W, -200, COL_W, h, 0x111111)
+    map.times.forEach((t, i) => {
+      const col = map.cols[i];
+      const rect = this.add.rectangle(col * COL_W, -200, COL_W, h, this.cfg.tileColor || 0x111111)
         .setOrigin(0, 0.5).setDepth(2);
-      this.notes.push({ time: t + AUDIO_OFFSET, col, rect, hit: false });
+      if (this.cfg.tileStroke) rect.setStrokeStyle(2, this.cfg.tileStroke, 0.9);
+      this.notes.push({
+        time: t + offset, col, rect, hit: false,
+        freq: map.freqs ? map.freqs[i] : null
+      });
     });
   }
 
@@ -336,6 +662,7 @@ class GameScene extends Phaser.Scene {
 
   /* ---- Música ---- */
   startMusic() {
+    if (this.cfg.synth) { this.startSynth(); return; }
     if (!this.cfg.music) return;
     if (this.cache.audio.exists(this.cfg.music)) {
       this.music = this.sound.add(this.cfg.music, { loop: !this.cfg.rhythm, volume: 0.6 });
@@ -348,7 +675,21 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  startSynth() {
+    const ctx = getCtx();
+    if (!ctx) return; // sin WebAudio el juego corre sin sonido
+    this.bus = ctx.createGain();
+    this.bus.gain.value = 0.9;
+    this.bus.connect(ctx.destination);
+    this.t0 = ctx.currentTime + ECU_LEAD;
+    scheduleSanjuanito(ctx, this.bus, this.t0);
+  }
+
   stopMusic() {
+    if (this.bus) {
+      try { this.bus.disconnect(); } catch (e) { /* ya desconectado */ }
+      this.bus = null;
+    }
     if (this.music) {
       this.music.stop();
       this.music.destroy();
@@ -370,7 +711,7 @@ class GameScene extends Phaser.Scene {
   }
 
   clockMs() {
-    return this.cfg.rhythm ? this.songTime * 1000 : this.elapsed;
+    return this.cfg.rhythm ? Math.max(0, this.songTime) * 1000 : this.elapsed;
   }
 
   togglePause() {
@@ -378,10 +719,28 @@ class GameScene extends Phaser.Scene {
     this.paused = !this.paused;
     this.setPauseUI(this.paused);
     if (this.music) this.paused ? this.music.pause() : this.music.resume();
+    // La música sintetizada se congela suspendiendo el reloj de audio
+    if (this.cfg.synth && audioCtx) {
+      this.paused ? audioCtx.suspend() : audioCtx.resume();
+    }
   }
 
   updateBackground() {
     const c = this.cfg;
+
+    if (c.palette) {
+      const prog = Phaser.Math.Clamp((this.songTime + ECU_LEAD) / (c.length + ECU_LEAD), 0, 1);
+      const seg = prog * (c.palette.length - 1);
+      const i = Math.min(Math.floor(seg), c.palette.length - 2);
+      const f = seg - i;
+      const a = Phaser.Display.Color.IntegerToColor(c.palette[i]);
+      const b = Phaser.Display.Color.IntegerToColor(c.palette[i + 1]);
+      const m = Phaser.Display.Color.Interpolate.ColorWithColor(a, b, 100, Math.round(f * 100));
+      this.bg.setFillStyle(Phaser.Display.Color.GetColor(m.r, m.g, m.b));
+      this.updateAndes(prog);
+      return;
+    }
+
     const t = this.elapsed / 1000;
     const hue = ((t * c.hueSpeed) % 360) / 360;
     const sat = Math.min(c.satStart + t * c.satGrow, c.satMax);
@@ -435,9 +794,23 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  /* ---- Modo ritmo (demo) ---- */
+  /* ---- Modo ritmo (demo y Ruta Ecuador) ---- */
+  // Tiempo de la canción sintetizada según el reloj de audio (compensando la latencia de salida)
+  synthTime(delta) {
+    if (audioCtx && this.t0 !== null) {
+      return audioCtx.currentTime - this.t0 - audioLatency();
+    }
+    return this.songTime + delta / 1000; // sin audio: reloj normal
+  }
+
+  currentSongTime() {
+    return this.cfg.synth ? this.synthTime(0) : this.songTime;
+  }
+
   advanceClock(delta) {
-    if (this.music && this.music.isPlaying) {
+    if (this.cfg.synth) {
+      this.songTime = this.synthTime(delta);
+    } else if (this.music && this.music.isPlaying) {
       // El reloj sigue al audio: así las baldosas nunca se desfasan de la música
       this.songTime = Math.max(this.songTime, this.music.seek);
     } else if (!this.music || this.musicDone) {
@@ -511,7 +884,7 @@ class GameScene extends Phaser.Scene {
     const target = this.notes.find(n => !n.hit);
     if (!target) return;
 
-    const dt = this.songTime - target.time; // negativo = temprano
+    const dt = this.currentSongTime() - target.time; // negativo = temprano
     if (dt < -WIN_OK) {
       this.showJudge('Temprano', '#ffffff');
       return;
@@ -523,7 +896,7 @@ class GameScene extends Phaser.Scene {
 
     target.hit = true;
     target.rect.setFillStyle(0xffffff, 0.35);
-    this.registerHit(col);
+    this.registerHit(col, target.freq);
 
     const a = Math.abs(dt);
     if (a <= WIN_PERFECT) { this.perfects++; this.showJudge('¡PERFECTO!', '#fde047'); }
@@ -531,7 +904,7 @@ class GameScene extends Phaser.Scene {
     else this.showJudge(dt < 0 ? 'Rápido' : 'Tarde', '#ffffff');
   }
 
-  registerHit(col) {
+  registerHit(col, freq) {
     this.score++;
     this.hits++;
     this.streak++;
@@ -539,7 +912,7 @@ class GameScene extends Phaser.Scene {
     this.scoreText.setText(this.scoreLabel());
     this.tweens.add({ targets: this.scoreText, scale: { from: 1.3, to: 1 }, duration: 120 });
     this.tweens.add({ targets: this.pulse, alpha: { from: 0.3, to: 0 }, duration: 250 });
-    playKey(col);
+    if (freq) playMelodyNote(freq); else playKey(col);
 
     if (this.streak % 4 === 0) this.showPraise();
     if (!this.cfg.rhythm && this.cfg.goal && this.score >= this.cfg.goal) this.endGame(true);
@@ -575,8 +948,9 @@ class GameScene extends Phaser.Scene {
   }
 
   showPraise() {
-    const idx = Math.min(Math.floor(this.streak / 4) - 1, PRAISE.length - 1);
-    const txt = this.add.text(Phaser.Math.Between(110, 290), 300, PRAISE[idx], {
+    const list = this.cfg.praise || PRAISE;
+    const idx = Math.min(Math.floor(this.streak / 4) - 1, list.length - 1);
+    const txt = this.add.text(Phaser.Math.Between(110, 290), 300, list[idx], {
       fontSize: '40px', color: Phaser.Utils.Array.GetRandom(PRAISE_COLORS),
       fontStyle: 'bold', stroke: '#000000', strokeThickness: 6
     }).setOrigin(0.5).setDepth(15);
@@ -684,12 +1058,15 @@ class GameScene extends Phaser.Scene {
     });
 
     // Canción y dificultad
-    this.add.text(cx, 215, '"RECALL"', {
+    this.add.text(cx, 215, '"' + this.cfg.songTitle + '"', {
       fontSize: '24px', color: '#ffffff', fontStyle: 'bold'
     }).setOrigin(0.5).setDepth(D + 1);
-    this.add.text(cx, 240, '(Demostración)', {
+    this.add.text(cx, 240, this.cfg.songSub, {
       fontSize: '14px', color: '#fb923c'
     }).setOrigin(0.5).setDepth(D + 1);
+
+    // Franja de tejido andino en la Ruta Ecuador
+    if (this.cfg.palette) drawTextileBand(this, 45, 558, 310, 12, D + 1);
 
     // Sello de nuevo récord
     if (this.newRecord) {
@@ -756,8 +1133,8 @@ class GameScene extends Phaser.Scene {
     if (!this.textures.exists('confetti')) {
       const cg = this.make.graphics({ x: 0, y: 0, add: false });
       cg.fillStyle(0xffffff, 1);
-      cg.fillRect(0, 0, 8, 12);
-      cg.generateTexture('confetti', 8, 12);
+      cg.fillRect(0, 0, 8 * SCALE, 12 * SCALE);
+      cg.generateTexture('confetti', 8 * SCALE, 12 * SCALE);
       cg.destroy();
     }
     this.add.particles(0, -20, 'confetti', {
@@ -766,7 +1143,7 @@ class GameScene extends Phaser.Scene {
       speedY: { min: 120, max: 260 },
       speedX: { min: -40, max: 40 },
       rotate: { start: 0, end: 360 },
-      scale: { min: 0.6, max: 1.2 },
+      scale: { min: 0.6 / SCALE, max: 1.2 / SCALE },
       tint: [0xfacc15, 0xf472b6, 0x22d3ee, 0x34d399, 0xffffff],
       frequency: 45,
       quantity: 2
@@ -777,8 +1154,8 @@ class GameScene extends Phaser.Scene {
 /* ---------------- CONFIG ---------------- */
 const config = {
   type: Phaser.AUTO,
-  width: W,
-  height: H,
+  width: W * SCALE,
+  height: H * SCALE,
   parent: 'game',
   backgroundColor: '#0f172a',
   scale: {
