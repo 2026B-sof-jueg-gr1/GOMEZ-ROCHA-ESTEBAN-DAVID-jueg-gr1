@@ -113,11 +113,13 @@ const MODES = {
   ecuador: {
     label: 'ECUADOR', rhythm: true, synth: true, map: ECU_MAP,
     songTitle: 'AMANECER ANDINO', songSub: '(Sanjuanito · composición original)',
-    tileH: 80, fall: 280, hitY: 510, offset: SYNTH_OFFSET, length: ECU_LENGTH,
+    tileH: 80, fall: 280, hitY: 510, offset: SYNTH_OFFSET, length: ECU_LENGTH, lead: ECU_LEAD,
     praise: PRAISE_EC, tileColor: 0x1c1208, tileStroke: 0xf2a900,
     // Del cielo nocturno al amanecer andino
-    palette: [0x14213d, 0x4a2c6b, 0xc2410c, 0xf59e0b, 0xfde68a]
+    palette: [0x14213d, 0x4a2c6b, 0xc2410c, 0xf59e0b, 0xfde68a], andesScenery: true
   },
+  pasillo: window.NIVEL_PASILLO,
+  chulla: window.NIVEL_CHULLA,
   chaos: {
     label: 'CAÓTICO', speed: 250, accel: 8, maxSpeed: Infinity, goal: null, music: null,
     hueSpeed: 12, satStart: 0.25, satGrow: 0.012, satMax: 0.9,
@@ -398,18 +400,22 @@ class MenuScene extends Phaser.Scene {
         fontSize: '16px', color: '#e2e8f0', align: 'center', lineSpacing: 6
       }).setOrigin(0.5);
 
-    this.add.text(W / 2, 345, 'ELIGE UN MODO', {
+    this.add.text(W / 2, 315, 'ELIGE UN MODO', {
       fontSize: '16px', color: '#94a3b8', fontStyle: 'bold'
     }).setOrigin(0.5);
 
-    this.makeButton(388, 0x22c55e, 'DEMOSTRACIÓN  [1]',
+    this.makeButton(340, 0x22c55e, 'DEMOSTRACIÓN  [1]',
       'Ritmo · ' + RECALL_MAP.times.length + ' baldosas · Mejor: ' + loadBest('demo'), 'demo');
-    this.makeButton(456, 0xe11d48, 'MODO CAÓTICO  [2]',
+    this.makeButton(386, 0xe11d48, 'MODO CAÓTICO  [2]',
       'Sin límite · Mejor: ' + loadBest('chaos'), 'chaos');
-    this.makeButton(524, 0xb45309, 'RUTA ECUADOR  [3]',
+    this.makeButton(432, 0xb45309, 'RUTA ECUADOR  [3]',
       'Sanjuanito · ' + ECU_MAP.times.length + ' baldosas · Mejor: ' + loadBest('ecuador'), 'ecuador');
+    this.makeButton(478, 0x7c2d5f, 'PASILLO QUITEÑO  [4]',
+      'Pasillo · ' + NIVEL_PASILLO.map.times.length + ' baldosas · Mejor: ' + loadBest('pasillo'), 'pasillo');
+    this.makeButton(524, 0x92400e, 'EL CHULLA QUITEÑO  [5]',
+      'Audio · 30 segundos · Mejor: ' + loadBest('chulla'), 'chulla');
 
-    this.add.text(W / 2, 576, 'Música: Recall (NCS) · Amanecer Andino (original)', {
+    this.add.text(W / 2, 572, 'Música: Recall · Amanecer Andino · Serenata Quiteña · El Chulla Quiteño', {
       fontSize: '11px', color: '#64748b'
     }).setOrigin(0.5);
 
@@ -418,16 +424,18 @@ class MenuScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-ONE', () => this.startGame('demo'));
     this.input.keyboard.on('keydown-TWO', () => this.startGame('chaos'));
     this.input.keyboard.on('keydown-THREE', () => this.startGame('ecuador'));
+    this.input.keyboard.on('keydown-FOUR', () => this.startGame('pasillo'));
+    this.input.keyboard.on('keydown-FIVE', () => this.startGame('chulla'));
   }
 
   makeButton(y, color, title, subtitle, mode) {
-    const btn = this.add.rectangle(W / 2, y, 340, 60, color)
+    const btn = this.add.rectangle(W / 2, y, 340, 42, color)
       .setInteractive({ useHandCursor: true });
-    this.add.text(W / 2, y - 10, title, {
-      fontSize: '21px', color: '#ffffff', fontStyle: 'bold'
+    this.add.text(W / 2, y - 7, title, {
+      fontSize: '16px', color: '#ffffff', fontStyle: 'bold'
     }).setOrigin(0.5);
-    this.add.text(W / 2, y + 15, subtitle, {
-      fontSize: '13px', color: '#ffffff'
+    this.add.text(W / 2, y + 10, subtitle, {
+      fontSize: '10px', color: '#ffffff'
     }).setOrigin(0.5).setAlpha(0.9);
     btn.on('pointerover', () => btn.setScale(1.04));
     btn.on('pointerout', () => btn.setScale(1));
@@ -453,8 +461,12 @@ class GameScene extends Phaser.Scene {
 
   preload() {
     // Coloca tu archivo en audio/recall.mp3 (los 30 s de la canción)
-    if (this.cfg.music && !this.cache.audio.exists(this.cfg.music)) {
-      this.load.audio(this.cfg.music, 'audio/' + this.cfg.music + '.mp3');
+    if (this.cfg.music && !this.cfg.externalAudio && !this.cache.audio.exists(this.cfg.music)) {
+      const file = this.cfg.musicFile || this.cfg.music + '.mp3';
+      this.load.on('loaderror', loadedFile => {
+        if (loadedFile.key === this.cfg.music) this.audioLoadError = file;
+      });
+      this.load.audio(this.cfg.music, 'audio/' + file);
     }
   }
 
@@ -465,7 +477,7 @@ class GameScene extends Phaser.Scene {
     this.score = 0;
     this.speed = this.cfg.speed || 250;
     this.elapsed = 0;
-    this.songTime = this.cfg.synth ? -ECU_LEAD : 0;
+    this.songTime = this.cfg.synth ? -(this.cfg.lead || 0) : 0;
     this.nextBeat = 0;
     this.musicDone = false;
     this.life = LIFE_MAX;
@@ -474,6 +486,7 @@ class GameScene extends Phaser.Scene {
     this.paused = false;
     this.overTime = 0;
     this.music = null;
+    this.audioElement = null;
     this.bus = null;
     this.t0 = null;
     this.newRecord = false;
@@ -501,8 +514,9 @@ class GameScene extends Phaser.Scene {
     // Pulso de luz (aciertos / beat)
     this.pulse = this.add.rectangle(0, 0, W, H, 0xffffff, 0).setOrigin(0).setDepth(1);
 
-    // Paisaje andino: estrellas, sol naciente, volcán y Quito
-    if (this.cfg.palette) this.buildAndes();
+    // Paisaje andino específico del modo seleccionado
+    if (this.cfg.buildScenery) this.cfg.buildScenery(this);
+    else if (this.cfg.andesScenery) this.buildAndes();
 
     // Líneas divisorias
     for (let i = 1; i < COLS; i++) {
@@ -663,11 +677,34 @@ class GameScene extends Phaser.Scene {
   /* ---- Música ---- */
   startMusic() {
     if (this.cfg.synth) { this.startSynth(); return; }
+    if (this.cfg.externalAudio) {
+      const file = 'audio/' + this.cfg.musicFile;
+      this.audioElement = new Audio(file);
+      this.audioElement.volume = 0.6;
+      this.audioElement.addEventListener('ended', () => { this.musicDone = true; });
+      this.audioElement.addEventListener('error', () => {
+        this.add.text(W / 2, 108, 'Audio inválido o no compatible: ' + this.cfg.musicFile, {
+          fontSize: '11px', color: '#ffffff', backgroundColor: '#e11d48',
+          align: 'center', wordWrap: { width: 360 }
+        }).setOrigin(0.5).setDepth(12);
+      }, { once: true });
+      this.audioElement.play().catch(() => {
+        this.add.text(W / 2, 108, 'No se pudo reproducir el audio del nivel.', {
+          fontSize: '12px', color: '#ffffff', backgroundColor: '#e11d48'
+        }).setOrigin(0.5).setDepth(12);
+      });
+      return;
+    }
     if (!this.cfg.music) return;
     if (this.cache.audio.exists(this.cfg.music)) {
       this.music = this.sound.add(this.cfg.music, { loop: !this.cfg.rhythm, volume: 0.6 });
       this.music.once('complete', () => { this.musicDone = true; });
       this.music.play();
+    } else if (this.audioLoadError) {
+      this.add.text(W / 2, 108, 'Audio inválido o no compatible: ' + this.audioLoadError, {
+        fontSize: '11px', color: '#ffffff', backgroundColor: '#e11d48',
+        align: 'center', wordWrap: { width: 360 }
+      }).setOrigin(0.5).setDepth(12);
     } else {
       this.add.text(W / 2, 108, 'Falta audio/recall.mp3 (sin sincronía)', {
         fontSize: '13px', color: '#ffffff', backgroundColor: '#e11d48'
@@ -681,8 +718,8 @@ class GameScene extends Phaser.Scene {
     this.bus = ctx.createGain();
     this.bus.gain.value = 0.9;
     this.bus.connect(ctx.destination);
-    this.t0 = ctx.currentTime + ECU_LEAD;
-    scheduleSanjuanito(ctx, this.bus, this.t0);
+    this.t0 = ctx.currentTime + (this.cfg.lead || 0);
+    (this.cfg.schedule || scheduleSanjuanito)(ctx, this.bus, this.t0);
   }
 
   stopMusic() {
@@ -694,6 +731,11 @@ class GameScene extends Phaser.Scene {
       this.music.stop();
       this.music.destroy();
       this.music = null;
+    }
+    if (this.audioElement) {
+      this.audioElement.pause();
+      this.audioElement.src = '';
+      this.audioElement = null;
     }
   }
 
@@ -719,6 +761,7 @@ class GameScene extends Phaser.Scene {
     this.paused = !this.paused;
     this.setPauseUI(this.paused);
     if (this.music) this.paused ? this.music.pause() : this.music.resume();
+    if (this.audioElement) this.paused ? this.audioElement.pause() : this.audioElement.play();
     // La música sintetizada se congela suspendiendo el reloj de audio
     if (this.cfg.synth && audioCtx) {
       this.paused ? audioCtx.suspend() : audioCtx.resume();
@@ -729,7 +772,8 @@ class GameScene extends Phaser.Scene {
     const c = this.cfg;
 
     if (c.palette) {
-      const prog = Phaser.Math.Clamp((this.songTime + ECU_LEAD) / (c.length + ECU_LEAD), 0, 1);
+      const lead = c.lead || 0;
+      const prog = Phaser.Math.Clamp((this.songTime + lead) / (c.length + lead), 0, 1);
       const seg = prog * (c.palette.length - 1);
       const i = Math.min(Math.floor(seg), c.palette.length - 2);
       const f = seg - i;
@@ -737,7 +781,8 @@ class GameScene extends Phaser.Scene {
       const b = Phaser.Display.Color.IntegerToColor(c.palette[i + 1]);
       const m = Phaser.Display.Color.Interpolate.ColorWithColor(a, b, 100, Math.round(f * 100));
       this.bg.setFillStyle(Phaser.Display.Color.GetColor(m.r, m.g, m.b));
-      this.updateAndes(prog);
+      if (c.updateScenery) c.updateScenery(this, prog);
+      else if (c.andesScenery) this.updateAndes(prog);
       return;
     }
 
@@ -794,7 +839,7 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  /* ---- Modo ritmo (demo y Ruta Ecuador) ---- */
+  /* ---- Modo ritmo (demo, Ruta Ecuador y Pasillo) ---- */
   // Tiempo de la canción sintetizada según el reloj de audio (compensando la latencia de salida)
   synthTime(delta) {
     if (audioCtx && this.t0 !== null) {
@@ -804,12 +849,15 @@ class GameScene extends Phaser.Scene {
   }
 
   currentSongTime() {
+    if (this.cfg.externalAudio) return this.songTime;
     return this.cfg.synth ? this.synthTime(0) : this.songTime;
   }
 
   advanceClock(delta) {
     if (this.cfg.synth) {
       this.songTime = this.synthTime(delta);
+    } else if (this.cfg.externalAudio && this.audioElement && !this.audioElement.paused) {
+      this.songTime = this.audioElement.currentTime;
     } else if (this.music && this.music.isPlaying) {
       // El reloj sigue al audio: así las baldosas nunca se desfasan de la música
       this.songTime = Math.max(this.songTime, this.music.seek);
@@ -852,6 +900,7 @@ class GameScene extends Phaser.Scene {
     // Fin del nivel: pasó la última baldosa
     const last = this.notes[this.notes.length - 1];
     if (last.hit && t > last.time + 0.6) this.endGame(true);
+    if (this.cfg.musicDuration && t >= this.cfg.musicDuration) this.endGame(true);
   }
 
   /* ---- Aciertos y errores ---- */
